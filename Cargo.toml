@@ -1,5 +1,6 @@
 [package]
 name = "db-rpc"
+description = "Query databases over HTTP/2"
 version = "0.1.0"
 edition = "2021"
 homepage = "https://github.com/wilsonzlin/db-rpc"
