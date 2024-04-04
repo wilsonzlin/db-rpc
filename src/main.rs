@@ -263,7 +263,7 @@ async fn main() {
   let ctx = Arc::new(Ctx { db });
 
   let app = Router::new()
-    .route("/healthz", get(|| async {}))
+    .route("/healthz", get(|| async { env!("CARGO_PKG_VERSION") }))
     .route("/batch", post(endpoint_batch))
     .route("/exec", post(endpoint_exec))
     .route("/query", post(endpoint_query))
