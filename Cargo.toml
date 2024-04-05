@@ -12,6 +12,7 @@ ahash = { version = "0.8.3", features = ["serde"] }
 axum = { version = "0.6.20", features = ["headers"] }
 axum-msgpack = "0.3.0"
 chrono = { version = "0.4.26", features = ["serde"] }
+dashmap = "5.5.3"
 futures = "0.3.28"
 itertools = "0.12.0"
 mysql_async = "0.33.0"

@@ -1,0 +1,31 @@
+{
+  "name": "db-rpc-client-js",
+  "version": "0.2.0",
+  "main": "dist/main.js",
+  "files": [
+    "dist/**"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wilsonzlin/db-rpc.git"
+  },
+  "author": "Wilson Lin <npm@wilsonl.in>",
+  "license": "ISC",
+  "scripts": {
+    "build": "npm run clean && tsc",
+    "clean": "rm -rf dist",
+    "format": "prettier --write src",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^2",
+    "@wzlin/valid": "^0.4.0",
+    "@xtjs/lib": "^0.53.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.2",
+    "prettier": "3.2.5",
+    "prettier-plugin-organize-imports": "3.2.4",
+    "typescript": "^5.4.3"
+  }
+}

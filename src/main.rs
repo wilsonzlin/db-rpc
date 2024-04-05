@@ -1,15 +1,22 @@
+mod cfg;
+
 use ahash::AHashMap;
 use axum::extract::DefaultBodyLimit;
+use axum::extract::Path;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::routing::post;
+use axum::routing::put;
 use axum::Router;
 use axum_msgpack::MsgPack;
+use cfg::Cfg;
+use cfg::CfgDb;
 use chrono::Datelike;
 use chrono::TimeZone;
 use chrono::Timelike;
 use chrono::Utc;
+use dashmap::DashMap;
 use itertools::Itertools;
 use mysql_async::prelude::Queryable;
 use mysql_async::OptsBuilder;
@@ -19,10 +26,9 @@ use mysql_async::PoolOpts;
 use mysql_async::Row;
 use serde::Deserialize;
 use service_toolkit::panic::set_up_panic_hook;
+use service_toolkit::server::build_port_server;
 use service_toolkit::server::build_port_server_with_tls;
 use service_toolkit::server::TlsCfg;
-use std::net::Ipv4Addr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::read_to_string;
 use tracing_subscriber::EnvFilter;
@@ -111,8 +117,69 @@ fn sqlv_to_rmpv(v: impl Into<SqlV>) -> RmpV {
   }
 }
 
+fn build_db_pool_from_cfg(cfg: CfgDb) -> Pool {
+  let opts =
+    OptsBuilder::default()
+      .ip_or_hostname(cfg.hostname)
+      .db_name(Some(cfg.database))
+      .user(Some(cfg.username))
+      .pass(Some(cfg.password))
+      .client_found_rows(false)
+      .pool_opts(PoolOpts::new().with_constraints(
+        PoolConstraints::new(0, cfg.max_pool_connections.unwrap_or(9500)).unwrap(),
+      ))
+      .tcp_port(cfg.port);
+  Pool::new(opts)
+}
+
+struct Db {
+  pool: Pool,
+  cfg: CfgDb,
+}
+
 struct Ctx {
-  db: Pool,
+  dbs: DashMap<String, Db>,
+}
+
+impl Ctx {
+  pub(crate) async fn db_conn(
+    &self,
+    db_name: impl AsRef<str>,
+  ) -> Result<mysql_async::Conn, (StatusCode, String)> {
+    let db_name = db_name.as_ref();
+    let Some(db) = self.dbs.get(db_name) else {
+      return Err((StatusCode::NOT_FOUND, format!("`{db_name}` does not exist")));
+    };
+    match db.pool.get_conn().await {
+      Ok(db) => Ok(db),
+      Err(error) => return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
+    }
+  }
+}
+
+async fn endpoint_list_dbs(State(ctx): State<Arc<Ctx>>) -> MsgPack<AHashMap<String, CfgDb>> {
+  MsgPack(
+    ctx
+      .dbs
+      .iter()
+      .map(|e| (e.key().clone(), e.value().cfg.clone()))
+      .collect(),
+  )
+}
+
+async fn endpoint_put_db(
+  State(ctx): State<Arc<Ctx>>,
+  Path(db_name): Path<String>,
+  MsgPack(req): MsgPack<CfgDb>,
+) {
+  ctx.dbs.insert(db_name, Db {
+    pool: build_db_pool_from_cfg(req.clone()),
+    cfg: req,
+  });
+}
+
+async fn endpoint_delete_db(State(ctx): State<Arc<Ctx>>, Path(db_name): Path<String>) {
+  ctx.dbs.remove(&db_name);
 }
 
 #[derive(Deserialize)]
@@ -123,12 +190,10 @@ struct QueryInput {
 
 async fn endpoint_query(
   State(ctx): State<Arc<Ctx>>,
+  Path(db_name): Path<String>,
   MsgPack(req): MsgPack<QueryInput>,
 ) -> Result<MsgPack<Vec<AHashMap<String, RmpV>>>, (StatusCode, String)> {
-  let mut db = match ctx.db.get_conn().await {
-    Ok(db) => db,
-    Err(error) => return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
-  };
+  let mut db = ctx.db_conn(db_name).await?;
   let res: Vec<Row> = match db
     .exec(
       req.query,
@@ -167,12 +232,10 @@ struct ExecInput {
 
 async fn endpoint_exec(
   State(ctx): State<Arc<Ctx>>,
+  Path(db_name): Path<String>,
   MsgPack(req): MsgPack<ExecInput>,
 ) -> Result<(), (StatusCode, String)> {
-  let mut db = match ctx.db.get_conn().await {
-    Ok(db) => db,
-    Err(error) => return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
-  };
+  let mut db = ctx.db_conn(db_name).await?;
   if let Err(error) = db
     .exec_drop(
       req.query,
@@ -193,12 +256,10 @@ struct BatchInput {
 
 async fn endpoint_batch(
   State(ctx): State<Arc<Ctx>>,
+  Path(db_name): Path<String>,
   MsgPack(req): MsgPack<BatchInput>,
 ) -> Result<(), (StatusCode, String)> {
-  let mut db = match ctx.db.get_conn().await {
-    Ok(db) => db,
-    Err(error) => return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
-  };
+  let mut db = ctx.db_conn(db_name).await?;
   if let Err(error) = db
     .exec_batch(
       req.query,
@@ -213,22 +274,6 @@ async fn endpoint_batch(
     return Err((StatusCode::BAD_REQUEST, error.to_string()));
   };
   Ok(())
-}
-
-#[derive(Deserialize)]
-struct Cfg {
-  database: String,
-  hostname: String,
-  password: String,
-  port: u16,
-  username: String,
-  max_pool_connections: Option<usize>,
-
-  server_interface: Ipv4Addr,
-  server_port: u16,
-  server_ssl_cert: PathBuf,
-  server_ssl_key: PathBuf,
-  server_ssl_ca: PathBuf,
 }
 
 #[tokio::main]
@@ -247,43 +292,47 @@ async fn main() {
   )
   .expect("parse config file");
 
-  let opts =
-    OptsBuilder::default()
-      .ip_or_hostname(cfg.hostname)
-      .db_name(Some(cfg.database))
-      .user(Some(cfg.username))
-      .pass(Some(cfg.password))
-      .client_found_rows(false)
-      .pool_opts(PoolOpts::new().with_constraints(
-        PoolConstraints::new(0, cfg.max_pool_connections.unwrap_or(9500)).unwrap(),
-      ))
-      .tcp_port(cfg.port);
-  let db = Pool::new(opts);
+  let dbs = cfg
+    .databases
+    .into_iter()
+    .map(|(db_name, cfg)| {
+      (db_name, Db {
+        pool: build_db_pool_from_cfg(cfg.clone()),
+        cfg,
+      })
+    })
+    .collect::<DashMap<_, _>>();
 
-  let ctx = Arc::new(Ctx { db });
+  let ctx = Arc::new(Ctx { dbs });
 
   let app = Router::new()
     .route("/healthz", get(|| async { env!("CARGO_PKG_VERSION") }))
-    .route("/batch", post(endpoint_batch))
-    .route("/exec", post(endpoint_exec))
-    .route("/query", post(endpoint_query))
+    .route("/dbs", get(endpoint_list_dbs))
+    .route("/db/:db", put(endpoint_put_db).delete(endpoint_delete_db))
+    .route("/db/:db/batch", post(endpoint_batch))
+    .route("/db/:db/exec", post(endpoint_exec))
+    .route("/db/:db/query", post(endpoint_query))
     .layer(DefaultBodyLimit::max(1024 * 1024 * 128))
     .with_state(ctx.clone());
 
-  build_port_server_with_tls(cfg.server_interface, cfg.server_port, &TlsCfg {
-    ca: Some(
-      tokio::fs::read(cfg.server_ssl_ca)
+  match cfg.server.ssl {
+    Some(ssl) => {
+      build_port_server_with_tls(cfg.server.interface, cfg.server.port, &TlsCfg {
+        ca: ssl
+          .ca
+          .map(|ca| std::fs::read(ca).expect("read SSL CA file")),
+        key: std::fs::read(ssl.key).expect("read SSL key file"),
+        cert: std::fs::read(ssl.cert).expect("read SSL certificate file"),
+      })
+      .serve(app.into_make_service())
+      .await
+      .unwrap();
+    }
+    None => {
+      build_port_server(cfg.server.interface, cfg.server.port)
+        .serve(app.into_make_service())
         .await
-        .expect("read SSL CA file"),
-    ),
-    key: tokio::fs::read(cfg.server_ssl_key)
-      .await
-      .expect("read SSL key file"),
-    cert: tokio::fs::read(cfg.server_ssl_cert)
-      .await
-      .expect("read SSL certificate file"),
-  })
-  .serve(app.into_make_service())
-  .await
-  .unwrap();
+        .unwrap();
+    }
+  };
 }
