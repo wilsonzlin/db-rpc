@@ -182,6 +182,7 @@ export class DbRpcClient {
       port: number;
       username: string;
       maxPoolConnections?: number;
+      apiKey?: string;
     },
   ) {
     await this.rawRequest("PUT", dbpp(dbName), {
@@ -191,6 +192,7 @@ export class DbRpcClient {
       port: cfg.port,
       username: cfg.username,
       max_pool_connections: cfg.maxPoolConnections,
+      api_key: cfg.apiKey,
     });
   }
 
@@ -208,6 +210,7 @@ export class DbRpcClient {
         port: new VInteger(1, 65535),
         username: new VString(),
         max_pool_connections: new VOptional(new VInteger(0)),
+        api_key: new VOptional(new VString()),
       }),
     ).parseRoot(raw);
     return Object.fromEntries(
@@ -220,6 +223,7 @@ export class DbRpcClient {
           port: cfg.port,
           username: cfg.username,
           maxPoolConnections: cfg.max_pool_connections,
+          apiKey: cfg.api_key,
         },
       ]),
     );
