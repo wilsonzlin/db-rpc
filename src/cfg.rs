@@ -32,6 +32,7 @@ pub(crate) struct CfgServer {
 
 #[derive(Deserialize)]
 pub(crate) struct Cfg {
+  #[serde(default)]
   pub databases: AHashMap<String, CfgDb>,
   pub server: CfgServer,
 }
