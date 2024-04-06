@@ -4,6 +4,7 @@ use ahash::AHashMap;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::Path;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::http::StatusCode;
 use axum::routing::get;
 use axum::routing::post;
@@ -139,47 +140,78 @@ struct Db {
 
 struct Ctx {
   dbs: DashMap<String, Db>,
+  global_api_key: Option<String>,
 }
 
 impl Ctx {
   pub(crate) async fn db_conn(
     &self,
+    headers: &HeaderMap,
     db_name: impl AsRef<str>,
   ) -> Result<mysql_async::Conn, (StatusCode, String)> {
     let db_name = db_name.as_ref();
     let Some(db) = self.dbs.get(db_name) else {
       return Err((StatusCode::NOT_FOUND, format!("`{db_name}` does not exist")));
     };
+    if let Some(expected_api_key) = &db.cfg.api_key {
+      let provided_api_key = headers.get("authorization").and_then(|h| h.to_str().ok());
+      if !provided_api_key.is_some_and(|k| k == expected_api_key) {
+        return Err((StatusCode::UNAUTHORIZED, format!("invalid API key")));
+      };
+    };
     match db.pool.get_conn().await {
       Ok(db) => Ok(db),
       Err(error) => return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
     }
   }
+
+  pub(crate) fn verify_global_auth(&self, headers: &HeaderMap) -> Result<(), (StatusCode, String)> {
+    if let Some(expected_api_key) = &self.global_api_key {
+      let provided_api_key = headers.get("authorization").and_then(|h| h.to_str().ok());
+      if !provided_api_key.is_some_and(|k| k == expected_api_key) {
+        return Err((StatusCode::UNAUTHORIZED, format!("invalid API key")));
+      };
+    };
+    Ok(())
+  }
 }
 
-async fn endpoint_list_dbs(State(ctx): State<Arc<Ctx>>) -> MsgPack<AHashMap<String, CfgDb>> {
-  MsgPack(
+async fn endpoint_list_dbs(
+  State(ctx): State<Arc<Ctx>>,
+  headers: HeaderMap,
+) -> Result<MsgPack<AHashMap<String, CfgDb>>, (StatusCode, String)> {
+  ctx.verify_global_auth(&headers)?;
+  Ok(MsgPack(
     ctx
       .dbs
       .iter()
       .map(|e| (e.key().clone(), e.value().cfg.clone()))
       .collect(),
-  )
+  ))
 }
 
 async fn endpoint_put_db(
   State(ctx): State<Arc<Ctx>>,
   Path(db_name): Path<String>,
+  headers: HeaderMap,
   MsgPack(req): MsgPack<CfgDb>,
-) {
+) -> Result<(), (StatusCode, String)> {
+  ctx.verify_global_auth(&headers)?;
   ctx.dbs.insert(db_name, Db {
     pool: build_db_pool_from_cfg(req.clone()),
     cfg: req,
   });
+  Ok(())
 }
 
-async fn endpoint_delete_db(State(ctx): State<Arc<Ctx>>, Path(db_name): Path<String>) {
+async fn endpoint_delete_db(
+  State(ctx): State<Arc<Ctx>>,
+  Path(db_name): Path<String>,
+  headers: HeaderMap,
+) -> Result<(), (StatusCode, String)> {
+  ctx.verify_global_auth(&headers)?;
   ctx.dbs.remove(&db_name);
+  Ok(())
 }
 
 #[derive(Deserialize)]
@@ -191,9 +223,10 @@ struct QueryInput {
 async fn endpoint_query(
   State(ctx): State<Arc<Ctx>>,
   Path(db_name): Path<String>,
+  headers: HeaderMap,
   MsgPack(req): MsgPack<QueryInput>,
 ) -> Result<MsgPack<Vec<AHashMap<String, RmpV>>>, (StatusCode, String)> {
-  let mut db = ctx.db_conn(db_name).await?;
+  let mut db = ctx.db_conn(&headers, &db_name).await?;
   let res: Vec<Row> = match db
     .exec(
       req.query,
@@ -233,9 +266,10 @@ struct ExecInput {
 async fn endpoint_exec(
   State(ctx): State<Arc<Ctx>>,
   Path(db_name): Path<String>,
+  headers: HeaderMap,
   MsgPack(req): MsgPack<ExecInput>,
 ) -> Result<(), (StatusCode, String)> {
-  let mut db = ctx.db_conn(db_name).await?;
+  let mut db = ctx.db_conn(&headers, &db_name).await?;
   if let Err(error) = db
     .exec_drop(
       req.query,
@@ -257,9 +291,10 @@ struct BatchInput {
 async fn endpoint_batch(
   State(ctx): State<Arc<Ctx>>,
   Path(db_name): Path<String>,
+  headers: HeaderMap,
   MsgPack(req): MsgPack<BatchInput>,
 ) -> Result<(), (StatusCode, String)> {
-  let mut db = ctx.db_conn(db_name).await?;
+  let mut db = ctx.db_conn(&headers, &db_name).await?;
   if let Err(error) = db
     .exec_batch(
       req.query,
@@ -303,7 +338,10 @@ async fn main() {
     })
     .collect::<DashMap<_, _>>();
 
-  let ctx = Arc::new(Ctx { dbs });
+  let ctx = Arc::new(Ctx {
+    dbs,
+    global_api_key: cfg.server.global_api_key,
+  });
 
   let app = Router::new()
     .route("/healthz", get(|| async { env!("CARGO_PKG_VERSION") }))

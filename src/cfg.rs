@@ -12,6 +12,7 @@ pub(crate) struct CfgDb {
   pub port: u16,
   pub username: String,
   pub max_pool_connections: Option<usize>,
+  pub api_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -26,6 +27,7 @@ pub(crate) struct CfgServer {
   pub interface: Ipv4Addr,
   pub port: u16,
   pub ssl: Option<CfgServerSsl>,
+  pub global_api_key: Option<String>,
 }
 
 #[derive(Deserialize)]

@@ -16,6 +16,12 @@ import withoutUndefined from "@xtjs/lib/js/withoutUndefined";
 import http, { IncomingMessage } from "node:http";
 import https from "node:https";
 
+export class DbRpcUnauthorizedError extends Error {
+  constructor() {
+    super("Authorization failed");
+  }
+}
+
 export class DbRpcApiError extends Error {
   constructor(
     readonly status: number,
@@ -84,6 +90,7 @@ export class DbRpcDbClient {
 export class DbRpcClient {
   constructor(
     private readonly opts: {
+      apiKey?: string;
       endpoint: string;
       maxRetries?: number;
       ssl?: {
@@ -106,6 +113,7 @@ export class DbRpcClient {
     const reqOpt: https.RequestOptions = {
       method,
       headers: withoutUndefined({
+        Authorization: this.opts.apiKey,
         "Content-Type": mapExists(body, () => "application/msgpack"),
       }),
       ca: this.opts.ssl?.ca,
@@ -134,6 +142,9 @@ export class DbRpcClient {
             .on("data", (c) => chunks.push(c))
             .on("end", () => resolve(Buffer.concat(chunks)));
         });
+        if (res.statusCode === 401) {
+          throw new DbRpcUnauthorizedError();
+        }
         const resType = res.headers["content-type"] ?? "";
         const resBody: any = /^application\/(x-)?msgpack$/.test(resType)
           ? // It appears that if Buffer is passed to msgpack.decode, it will parse all bytes as Buffer, but if not, it will use Uint8Array. We want Uint8Array values for all bytes.
@@ -150,6 +161,7 @@ export class DbRpcClient {
       } catch (err) {
         if (
           attempt === maxRetries ||
+          err instanceof DbRpcUnauthorizedError ||
           (err instanceof DbRpcApiError && err.status < 500)
         ) {
           throw err;
