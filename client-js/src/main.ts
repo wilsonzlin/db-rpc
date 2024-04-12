@@ -12,9 +12,12 @@ import asyncTimeout from "@xtjs/lib/js/asyncTimeout";
 import bufferToUint8Array from "@xtjs/lib/js/bufferToUint8Array";
 import decodeUtf8 from "@xtjs/lib/js/decodeUtf8";
 import mapExists from "@xtjs/lib/js/mapExists";
-import withoutUndefined from "@xtjs/lib/js/withoutUndefined";
-import http, { IncomingMessage } from "node:http";
-import https from "node:https";
+import {
+  ClientHttp2Session,
+  IncomingHttpHeaders,
+  IncomingHttpStatusHeader,
+  connect,
+} from "node:http2";
 
 export class DbRpcUnauthorizedError extends Error {
   constructor() {
@@ -98,6 +101,9 @@ export class DbRpcDbClient {
 }
 
 export class DbRpcClient {
+  // Only HTTP/2 is supported, because multiplexing is extremely beneficial and one-connection-per-query (i.e. HTTP/1.1) will reintroduce a lot of the pain that db-rpc was designed to mitigate in the first place.
+  private client: ClientHttp2Session | undefined;
+
   constructor(
     private readonly opts: {
       apiKey?: string;
@@ -120,49 +126,56 @@ export class DbRpcClient {
   async rawRequest(method: string, path: string, body: any) {
     // Construct a URL to ensure it is correct. If it throws, we don't want to retry.
     const reqUrl = new URL(`${this.opts.endpoint}${path}`);
-    const reqOpt: https.RequestOptions = {
-      method,
-      headers: withoutUndefined({
-        Authorization: this.opts.apiKey,
-        "Content-Type": mapExists(body, () => "application/msgpack"),
-      }),
-      ca: this.opts.ssl?.ca,
-      cert: this.opts.ssl?.cert,
-      key: this.opts.ssl?.key,
-      servername: this.opts.ssl?.servername,
-      rejectUnauthorized: this.opts.ssl?.rejectUnauthorized,
-    };
     const reqBody = mapExists(body, encode);
     const { maxRetries = 1 } = this.opts;
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const res = await new Promise<IncomingMessage>((resolve, reject) => {
-          // For safety, assume https unless explicitly http.
-          const req =
-            reqUrl.protocol === "http:"
-              ? http.request(reqUrl, reqOpt)
-              : https.request(reqUrl, reqOpt);
-          req.on("error", reject).on("response", resolve);
-          req.end(reqBody);
+        if (!this.client || this.client.closed || this.client.destroyed) {
+          this.client = connect(reqUrl, {
+            ca: this.opts.ssl?.ca,
+            cert: this.opts.ssl?.cert,
+            key: this.opts.ssl?.key,
+            servername: this.opts.ssl?.servername,
+            rejectUnauthorized: this.opts.ssl?.rejectUnauthorized,
+            // These settings significantly improve throughput, especially for large payloads and/or long pipes.
+            maxSessionMemory: 4096,
+            peerMaxConcurrentStreams: 131072,
+            settings: {
+              initialWindowSize: 1024 * 1024 * 1024,
+              maxFrameSize: 2 ** 24 - 1,
+            },
+          });
+        }
+        const req = this.client!.request({
+          ":method": method,
+          ":path": reqUrl.pathname + reqUrl.search,
+          Authorization: this.opts.apiKey,
+          "Content-Type": mapExists(body, () => "application/msgpack"),
+        });
+        const resHeaders = await new Promise<
+          IncomingHttpHeaders & IncomingHttpStatusHeader
+        >((resolve, reject) => {
+          req.on("error", reject).on("response", resolve).end(reqBody);
         });
         const resBodyRaw = await new Promise<Buffer>((resolve, reject) => {
           const chunks = Array<Buffer>();
-          res
+          req
             .on("error", reject)
             .on("data", (c) => chunks.push(c))
             .on("end", () => resolve(Buffer.concat(chunks)));
         });
-        if (res.statusCode === 401) {
+        const resStatus = resHeaders[":status"]!;
+        if (resStatus === 401) {
           throw new DbRpcUnauthorizedError();
         }
-        const resType = res.headers["content-type"] ?? "";
+        const resType = resHeaders["content-type"] ?? "";
         const resBody: any = /^application\/(x-)?msgpack$/.test(resType)
           ? // It appears that if Buffer is passed to msgpack.decode, it will parse all bytes as Buffer, but if not, it will use Uint8Array. We want Uint8Array values for all bytes.
             decode(bufferToUint8Array(resBodyRaw))
           : decodeUtf8(resBodyRaw);
-        if (res.statusCode! < 200 || res.statusCode! > 299) {
+        if (resStatus < 200 || resStatus > 299) {
           throw new DbRpcApiError(
-            res.statusCode!,
+            resStatus,
             resBody?.error ?? resBody,
             resBody?.error_details ?? undefined,
           );
