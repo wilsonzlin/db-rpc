@@ -26,6 +26,7 @@ use mysql_async::PoolConstraints;
 use mysql_async::PoolOpts;
 use mysql_async::Row;
 use serde::Deserialize;
+use serde::Serialize;
 use service_toolkit::panic::set_up_panic_hook;
 use service_toolkit::server::build_port_server;
 use service_toolkit::server::build_port_server_with_tls;
@@ -288,27 +289,53 @@ struct BatchInput {
   params: Vec<Vec<RmpV>>,
 }
 
+#[derive(Serialize)]
+struct BatchOutputResult {
+  affected_rows: u64,
+  last_insert_id: Option<u64>,
+}
+
 async fn endpoint_batch(
   State(ctx): State<Arc<Ctx>>,
   Path(db_name): Path<String>,
   headers: HeaderMap,
   MsgPack(req): MsgPack<BatchInput>,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<MsgPack<Vec<BatchOutputResult>>, (StatusCode, String)> {
   let mut db = ctx.db_conn(&headers, &db_name).await?;
-  if let Err(error) = db
-    .exec_batch(
-      req.query,
-      req
-        .params
-        .into_iter()
-        .map(|row| row.into_iter().map(rmpv_to_sqlv).collect_vec())
-        .collect_vec(),
-    )
-    .await
-  {
-    return Err((StatusCode::BAD_REQUEST, error.to_string()));
+  let mut results = Vec::new();
+  // Derived from mysql_async::queryable::Conn::exec_batch.
+  let stmt = match db.prep(req.query).await {
+    Ok(stmt) => stmt,
+    Err(err) => {
+      return Err((
+        StatusCode::BAD_REQUEST,
+        format!("Failed to prepare statement: {err}"),
+      ))
+    }
   };
-  Ok(())
+  for params_raw in req.params {
+    let params = params_raw.into_iter().map(rmpv_to_sqlv).collect_vec();
+    let res = match db.exec_iter(&stmt, params).await {
+      Ok(res) => res,
+      Err(err) => {
+        return Err((
+          StatusCode::BAD_REQUEST,
+          format!("Failed to execute statement: {err}"),
+        ))
+      }
+    };
+    results.push(BatchOutputResult {
+      affected_rows: res.affected_rows(),
+      last_insert_id: res.last_insert_id(),
+    });
+    if let Err(err) = res.drop_result().await {
+      return Err((
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("Failed to finalise execution: {err}"),
+      ));
+    };
+  }
+  Ok(MsgPack(results))
 }
 
 #[tokio::main]
