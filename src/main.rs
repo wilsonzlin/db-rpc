@@ -120,17 +120,18 @@ fn sqlv_to_rmpv(v: impl Into<SqlV>) -> RmpV {
 }
 
 fn build_db_pool_from_cfg(cfg: CfgDb) -> Pool {
-  let opts =
-    OptsBuilder::default()
-      .ip_or_hostname(cfg.hostname)
-      .db_name(Some(cfg.database))
-      .user(Some(cfg.username))
-      .pass(Some(cfg.password))
-      .client_found_rows(false)
-      .pool_opts(PoolOpts::new().with_constraints(
-        PoolConstraints::new(0, cfg.max_pool_connections.unwrap_or(9500)).unwrap(),
-      ))
-      .tcp_port(cfg.port);
+  let mut pool_opts = PoolOpts::new();
+  if let Some(max) = cfg.max_pool_connections {
+    pool_opts = pool_opts.with_constraints(PoolConstraints::new(0, max).unwrap());
+  };
+  let opts = OptsBuilder::default()
+    .ip_or_hostname(cfg.hostname)
+    .db_name(Some(cfg.database))
+    .user(Some(cfg.username))
+    .pass(Some(cfg.password))
+    .client_found_rows(false)
+    .pool_opts(pool_opts)
+    .tcp_port(cfg.port);
   Pool::new(opts)
 }
 
