@@ -162,7 +162,16 @@ impl Ctx {
     };
     match db.pool.get_conn().await {
       Ok(db) => Ok(db),
-      Err(error) => return Err((StatusCode::INTERNAL_SERVER_ERROR, error.to_string())),
+      Err(error) => {
+        tracing::error!(
+          error = error.to_string(),
+          "failed to establish database connection"
+        );
+        return Err((
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("failed to establish database connection: {}", error),
+        ));
+      }
     }
   }
 
@@ -309,7 +318,7 @@ async fn endpoint_batch(
     Err(err) => {
       return Err((
         StatusCode::BAD_REQUEST,
-        format!("Failed to prepare statement: {err}"),
+        format!("failed to prepare statement: {err}"),
       ))
     }
   };
@@ -320,7 +329,7 @@ async fn endpoint_batch(
       Err(err) => {
         return Err((
           StatusCode::BAD_REQUEST,
-          format!("Failed to execute statement: {err}"),
+          format!("failed to execute statement: {err}"),
         ))
       }
     };
@@ -329,9 +338,13 @@ async fn endpoint_batch(
       last_insert_id: res.last_insert_id(),
     });
     if let Err(err) = res.drop_result().await {
+      tracing::error!(
+        error = err.to_string(),
+        "failed to finalise query execution"
+      );
       return Err((
         StatusCode::INTERNAL_SERVER_ERROR,
-        format!("Failed to finalise execution: {err}"),
+        format!("failed to finalise execution: {err}"),
       ));
     };
   }
