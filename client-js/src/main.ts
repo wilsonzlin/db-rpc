@@ -61,14 +61,7 @@ export class DbRpcDbClient {
   }
 
   async batch(query: string, params: Array<Array<MsgPackValue>>) {
-    await this.svc.rawRequest("POST", `${this.dbpp}/batch`, {
-      query,
-      params,
-    });
-  }
-
-  async exec(query: string, params: Array<MsgPackValue>) {
-    const res = await this.svc.rawRequest("POST", `${this.dbpp}/exec`, {
+    const res = await this.svc.rawRequest("POST", `${this.dbpp}/batch`, {
       query,
       params,
     });
@@ -82,6 +75,13 @@ export class DbRpcDbClient {
       affectedRows: r.affected_rows,
       lastInsertId: r.last_insert_id,
     }));
+  }
+
+  async exec(query: string, params: Array<MsgPackValue>) {
+    await this.svc.rawRequest("POST", `${this.dbpp}/exec`, {
+      query,
+      params,
+    });
   }
 
   async query<R>(
