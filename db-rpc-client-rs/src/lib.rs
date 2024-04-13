@@ -40,8 +40,8 @@ pub type DbRpcClientResult<T> = Result<T, DbRpcClientError>;
 
 #[derive(Clone, Debug)]
 pub struct DbRpcClientCfg {
-  api_key: Option<String>,
-  endpoint: String,
+  pub api_key: Option<String>,
+  pub endpoint: String,
 }
 
 #[derive(Clone, Debug)]
