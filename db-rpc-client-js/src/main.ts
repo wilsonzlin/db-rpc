@@ -81,10 +81,18 @@ export class DbRpcDbClient {
   }
 
   async exec(query: string, params: Array<MsgPackValue>) {
-    await this.svc.rawRequest("POST", `${this.dbpp}/exec`, {
+    const res = await this.svc.rawRequest("POST", `${this.dbpp}/exec`, {
       query,
       params,
     });
+    const p = new VStruct({
+      affected_rows: new VInteger(),
+      last_insert_id: new VOptional(new VInteger()),
+    }).parseRoot(res);
+    return {
+      affectedRows: p.affected_rows,
+      lastInsertId: p.last_insert_id,
+    };
   }
 
   async query<R>(

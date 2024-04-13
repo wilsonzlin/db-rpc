@@ -274,23 +274,45 @@ struct ExecInput {
   params: Vec<RmpV>,
 }
 
+#[derive(Serialize)]
+struct ExecOutput {
+  affected_rows: u64,
+  last_insert_id: Option<u64>,
+}
+
 async fn endpoint_exec(
   State(ctx): State<Arc<Ctx>>,
   Path(db_name): Path<String>,
   headers: HeaderMap,
   MsgPack(req): MsgPack<ExecInput>,
-) -> Result<(), (StatusCode, String)> {
+) -> Result<MsgPack<ExecOutput>, (StatusCode, String)> {
   let mut db = ctx.db_conn(&headers, &db_name).await?;
-  if let Err(error) = db
-    .exec_drop(
+  match db
+    .exec_iter(
       req.query,
       req.params.into_iter().map(rmpv_to_sqlv).collect_vec(),
     )
     .await
   {
-    return Err((StatusCode::BAD_REQUEST, error.to_string()));
-  };
-  Ok(())
+    Ok(res) => {
+      let out = ExecOutput {
+        affected_rows: res.affected_rows(),
+        last_insert_id: res.last_insert_id(),
+      };
+      if let Err(err) = res.drop_result().await {
+        tracing::error!(
+          error = err.to_string(),
+          "failed to finalise query execution"
+        );
+        return Err((
+          StatusCode::INTERNAL_SERVER_ERROR,
+          format!("failed to finalise execution: {err}"),
+        ));
+      };
+      Ok(MsgPack(out))
+    }
+    Err(error) => Err((StatusCode::BAD_REQUEST, error.to_string())),
+  }
 }
 
 #[derive(Deserialize)]
@@ -299,18 +321,12 @@ struct BatchInput {
   params: Vec<Vec<RmpV>>,
 }
 
-#[derive(Serialize)]
-struct BatchOutputResult {
-  affected_rows: u64,
-  last_insert_id: Option<u64>,
-}
-
 async fn endpoint_batch(
   State(ctx): State<Arc<Ctx>>,
   Path(db_name): Path<String>,
   headers: HeaderMap,
   MsgPack(req): MsgPack<BatchInput>,
-) -> Result<MsgPack<Vec<BatchOutputResult>>, (StatusCode, String)> {
+) -> Result<MsgPack<Vec<ExecOutput>>, (StatusCode, String)> {
   let mut db = ctx.db_conn(&headers, &db_name).await?;
   let mut results = Vec::new();
   // Derived from mysql_async::queryable::Conn::exec_batch.
@@ -334,7 +350,7 @@ async fn endpoint_batch(
         ))
       }
     };
-    results.push(BatchOutputResult {
+    results.push(ExecOutput {
       affected_rows: res.affected_rows(),
       last_insert_id: res.last_insert_id(),
     });
