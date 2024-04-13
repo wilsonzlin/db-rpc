@@ -1,26 +1,11 @@
-[package]
-name = "db-rpc"
-description = "Query databases over HTTP/2"
-version = "0.5.0"
-edition = "2021"
-homepage = "https://github.com/wilsonzlin/db-rpc"
-license = "MIT"
-authors = ["Wilson Lin <code@wilsonl.in>"]
+[workspace]
+resolver = "2"
+members = [
+  "db-rpc"
+]
 
-[dependencies]
-ahash = { version = "0.8.3", features = ["serde"] }
-axum = { version = "0.6.20", features = ["headers"] }
-axum-msgpack = "0.3.0"
-chrono = { version = "0.4.26", features = ["serde"] }
-dashmap = "5.5.3"
-futures = "0.3.28"
-itertools = "0.12.0"
-# Use rustls as that's what service-toolkit uses.
-mysql_async = { version = "0.33.0", default-features = false, features = ["default-rustls"] }
-rmpv = { version = "1.0.1", features = ["with-serde"] }
-serde = { version = "1.0.183", features = ["derive"] }
-service-toolkit = "0.4.0"
-tokio = { version = "1.29.1", features = ["full"] }
-toml = "0.8.12"
-tracing = "0.1.37"
-tracing-subscriber = { version = "0.3.18", features = ["json", "env-filter"] }
+[profile.release]
+codegen-units = 1
+debug = true
+lto = true
+opt-level = 3
