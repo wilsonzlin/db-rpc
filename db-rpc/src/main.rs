@@ -407,7 +407,10 @@ async fn main() {
     .route("/db/:db/batch", post(endpoint_batch))
     .route("/db/:db/exec", post(endpoint_exec))
     .route("/db/:db/query", post(endpoint_query))
-    .layer(DefaultBodyLimit::max(1024 * 1024 * 128))
+    .layer(match cfg.server.max_body_size {
+      Some(l) => DefaultBodyLimit::max(l),
+      None => DefaultBodyLimit::disable(),
+    })
     .with_state(ctx.clone());
 
   match cfg.server.ssl {
