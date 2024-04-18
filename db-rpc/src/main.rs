@@ -59,18 +59,17 @@ fn rmpv_to_sqlv(v: impl Into<RmpV>) -> SqlV {
             let ns: u64 = (u32::from_be_bytes(raw[..4].try_into().unwrap()) >> 2).into();
             let sec = u64::from_be_bytes(raw.try_into().unwrap())
               & 0b11_11111111_11111111_11111111_11111111;
+            let sec: i64 = sec.try_into().unwrap();
             (sec, ns)
           }
           12 => {
             let ns: u64 = u32::from_be_bytes(raw[..4].try_into().unwrap()).into();
-            let sec = u64::from_be_bytes(raw[4..].try_into().unwrap());
+            let sec = i64::from_be_bytes(raw[4..].try_into().unwrap());
             (sec, ns)
           }
           _ => unreachable!(),
         };
-        let ts = Utc
-          .timestamp_opt(sec.try_into().unwrap(), ns.try_into().unwrap())
-          .unwrap();
+        let ts = Utc.timestamp_opt(sec, ns.try_into().unwrap()).unwrap();
         SqlV::Date(
           ts.year().try_into().unwrap(),
           ts.month().try_into().unwrap(),
