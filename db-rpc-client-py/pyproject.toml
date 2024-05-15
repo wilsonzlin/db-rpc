@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "db-rpc-client-py"
+version = "0.1.0"
+description = "Python client for db-rpc"
+authors = ["Wilson Lin <code@wilsonl.in>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+dacite = "^1.8.1"
+msgpack = "^1.0.8"
+requests = "^2.31.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^24.4.2"
+isort = "^5.13.2"
+autoflake = "^2.3.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
