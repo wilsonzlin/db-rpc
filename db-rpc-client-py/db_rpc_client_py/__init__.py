@@ -1,3 +1,4 @@
+import json
 from dacite import from_dict
 from dataclasses import asdict
 from dataclasses import dataclass
@@ -34,7 +35,10 @@ class DbRpcUnauthorizedError(Exception):
 
 class DbRpcApiError(Exception):
     def __init__(self, status: int, response: Any):
-        super().__init__(f"Request to db-rpc failed with status {status}")
+        error_message = f"Request to db-rpc failed with status {status}"
+        if response:
+            error_message += f"\n\n\tDetails: {json.dumps(response, indent=2)}"
+        super().__init__(error_message)
         self.status = status
         self.response = response
 
